@@ -1,10 +1,14 @@
 """
 routers/users.py – User registration, profile retrieval, update, and deletion.
 """
+import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
+
+logger = logging.getLogger(__name__)
 
 from app.auth import (
     clear_auth_cookie,
@@ -51,9 +55,18 @@ def register(payload: UserCreate, db: Session = Depends(get_db)):
         hashed_password=hash_password(payload.password),
         full_name=payload.full_name,
     )
-    db.add(user)
-    db.commit()
-    db.refresh(user)
+    try:
+        db.add(user)
+        db.commit()
+        db.refresh(user)
+        logger.info("New user registered: %s", user.email)
+    except SQLAlchemyError as exc:
+        db.rollback()
+        logger.error("Failed to register user: %s", exc, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Database error during registration: {str(exc)}",
+        )
     return user
 
 
@@ -118,8 +131,16 @@ def update_me(
     if payload.full_name is not None:
         current_user.full_name = payload.full_name
 
-    db.commit()
-    db.refresh(current_user)
+    try:
+        db.commit()
+        db.refresh(current_user)
+    except SQLAlchemyError as exc:
+        db.rollback()
+        logger.error("Failed to update user %s: %s", current_user.id, exc, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Database error while updating profile: {str(exc)}",
+        )
     return current_user
 
 
@@ -158,5 +179,14 @@ def delete_user(
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "User not found.")
-    db.delete(user)
-    db.commit()
+    try:
+        db.delete(user)
+        db.commit()
+        logger.info("User deleted: %s", user_id)
+    except SQLAlchemyError as exc:
+        db.rollback()
+        logger.error("Failed to delete user %s: %s", user_id, exc, exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Database error while deleting user: {str(exc)}",
+        )
